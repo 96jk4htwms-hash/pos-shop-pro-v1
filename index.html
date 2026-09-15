@@ -1761,14 +1761,9 @@
             // โปรเจกต์ที่ปิดการยืนยันอีเมลไว้ — ล็อกอินได้ทันทีหลังสมัคร ไปต่อ bootstrap ได้เลย
             window.showToast("สมัครบัญชีสำเร็จ — เข้าสู่ระบบให้อัตโนมัติ");
             await window.refreshAuthStatus();
-            // NOTE: ห้าม push (forceSyncNow) ทันทีตรงนี้ — ก่อน bootstrap_first_owner ทำงาน
-            // เสร็จ ยังไม่มีแถวของบัญชีนี้ใน app_users เลย ทำให้ is_staff()/is_manager() บน
-            // ฝั่ง RLS เป็น false และทุก upsert (categories/products/app_users) จะถูกปฏิเสธ
-            // ทันที โผล่ error alert ซ้อนกันทั้งที่ล็อกอินสำเร็จจริง ๆ — ถ้ายังต้อง bootstrap
-            // อยู่ (modal เปิดค้าง) จึงข้ามการซิงค์ไปก่อน แล้วให้ confirmBootstrapOwner เป็น
-            // ฝ่ายซิงค์เองหลัง bootstrap เสร็จ (ตอนนั้น is_manager() เป็น true แล้ว)
-            const needsBootstrap = await window.checkAndBootstrapOwner?.();
-            if (!needsBootstrap) window.loadDatabaseState?.(true);
+            await window.checkAndBootstrapOwner?.();
+            window.forceSyncNow?.();
+            window.loadDatabaseState?.(true);
           } else {
             // ค่าเริ่มต้นของ Supabase คือต้องกดยืนยันอีเมลก่อนถึงจะมี session — แจ้งให้ชัดเจน
             // กันคนงงว่าทำไมสมัครแล้วแต่ยังเข้าระบบไม่ได้ทันที
@@ -1791,9 +1786,9 @@
           document.getElementById('store-auth-password').value = '';
           window.showToast("เข้าสู่ระบบร้านค้าสำเร็จ");
           await window.refreshAuthStatus();
-          // ดูคอมเมนต์เดียวกันใน storeSignUp — ข้าม push จนกว่าจะรู้ว่าไม่ต้อง bootstrap
-          const needsBootstrap = await window.checkAndBootstrapOwner?.();
-          if (!needsBootstrap) window.loadDatabaseState?.(true);
+          await window.checkAndBootstrapOwner?.();
+          window.forceSyncNow?.();
+          window.loadDatabaseState?.(true);
         } catch (err) {
           window.showAlert("เข้าสู่ระบบไม่สำเร็จ", err.message || "อีเมลหรือรหัสผ่านไม่ถูกต้อง", true);
         }
@@ -1804,28 +1799,22 @@
       // session — there is no owner account until bootstrap_first_owner() has been called once
       // for this project. Safe to attempt on every sign-in: the RPC itself refuses (harmlessly)
       // if an owner already exists, so this only ever prompts when one genuinely doesn't yet.
-      // Returns true if bootstrap is still pending (modal just opened, caller should NOT
-      // push/pull yet since RLS will reject everything until bootstrap_first_owner runs),
-      // false if this account is already bootstrapped and it's safe to sync normally.
       window.checkAndBootstrapOwner = async function() {
         const client = window.getSupabaseClient();
-        if (!client) return false;
+        if (!client) return;
         try {
           const { data: { session } } = await client.auth.getSession();
-          if (!session?.user) return false;
+          if (!session?.user) return;
           const { data: existing } = await client.from('app_users').select('id').eq('auth_user_id', session.user.id).maybeSingle();
-          if (existing) return false; // already bootstrapped on a previous sign-in
+          if (existing) return; // already bootstrapped on a previous sign-in
 
           document.getElementById('bootstrap-owner-name').value = db.storeName || '';
           document.getElementById('bootstrap-owner-pin').value = '';
           document.getElementById('modal-bootstrap-owner').classList.remove('hidden');
           document.getElementById('modal-bootstrap-owner').classList.add('flex');
-          return true;
         } catch (e) {
           // RLS hides app_users entirely from a not-yet-bootstrapped session, so this SELECT
           // failing/returning nothing is expected and not itself an error worth surfacing.
-          // Treat as "still pending" so the caller stays cautious and doesn't try to sync.
-          return true;
         }
       };
 
@@ -1862,13 +1851,6 @@
 
           window.closeModal('modal-bootstrap-owner');
           window.showToast(`ตั้งค่า "${name}" เป็นเจ้าของร้านสำเร็จ`);
-
-          // ตอนนี้ auth_user_id ของ session นี้มีแถวใน app_users แล้ว (role OWNER) —
-          // is_manager()/is_staff() บน RLS จะเป็น true ตั้งแต่คำสั่งถัดไปทันที จึงเพิ่งจะ
-          // ปลอดภัยที่จะ push ข้อมูลในเครื่องขึ้น (ก่อนหน้านี้จะโดน RLS ปฏิเสธเสมอ) แล้วค่อย
-          // pull กลับลงมาให้ครบ (พนักงานคนอื่น/บิลจากเครื่องอื่น ถ้ามี)
-          await window.forceSyncNow?.();
-          window.loadDatabaseState?.(true);
         } catch (err) {
           if (String(err.message || '').includes('มี OWNER อยู่แล้ว')) {
             window.showAlert("มีเจ้าของร้านอยู่แล้ว", "ฐานข้อมูลนี้มีบัญชีเจ้าของร้านตั้งไว้แล้ว ถ้าต้องการสิทธิ์เต็ม กรุณาติดต่อเจ้าของร้านคนเดิม", true);
@@ -2264,14 +2246,11 @@
         if (overlay) overlay.classList.remove('hidden');
 
         try {
-          // isQuiet=false: ให้ sub-function เป็นฝ่ายแจ้ง alert เองถ้าพัง (มันรู้รายละเอียด
-          // ของตาราง/คอลัมน์ที่พังชัดเจนกว่า) — เดิมเรียกซ้ำสองรอบ (quiet แล้ว non-quiet)
-          // แล้วยัง throw ต่อให้ catch ด้านล่าง showAlert อีกที ทำให้ error โผล่ซ้อนกัน 2 อัน
-          // ต่อการซิงค์ล้มเหลวหนึ่งครั้ง — ตอนนี้เหลือแค่จุดเดียวที่แจ้งเตือนต่อความล้มเหลวหนึ่งครั้ง
-          const res1 = await window.syncProductsToSupabase(false);
-          if (!res1) { window.updateSupabaseBadge(false); return; }
-          const res2 = await window.syncTransactionsToSupabase(false);
-          if (!res2) { window.updateSupabaseBadge(false); return; }
+          const res1 = await window.syncProductsToSupabase(true);
+          const res2 = await window.syncTransactionsToSupabase(true);
+
+          if (!res1) { await window.syncProductsToSupabase(false); throw new Error('ซิงค์สินค้า/หมวดหมู่/ลูกค้าไม่สำเร็จ'); }
+          if (!res2) { await window.syncTransactionsToSupabase(false); throw new Error('ซิงค์บิล/กะ/รายรับ-จ่ายไม่สำเร็จ'); }
 
           window.updateSupabaseBadge(true);
           window.showToast("ซิงค์ข้อมูลกับ Supabase SQL สำเร็จแล้ว!");
@@ -4583,10 +4562,7 @@
       // Every single table failed — almost certainly not signed in, or URL/key wrong, rather
       // than a per-table schema issue. Report that plainly instead of dumping 7 identical errors.
       console.error('loadDatabaseState: all queries failed', failures);
-      // silent=true มักถูกเรียกจากหลังล็อกอินอัตโนมัติ — ถ้า RLS ยังไม่พร้อม (เช่น bootstrap
-      // owner ยังไม่เสร็จ) การดึงล้มเหลวเป็นเรื่องคาดไว้แล้ว ไม่ควรโผล่ alert รบกวนผู้ใช้
-      // ตอนนั้น ให้เงียบไว้ (log ไว้ใน console พอ) เหมือนที่ silent ควรจะทำงานจริง ๆ
-      if (!silent) window.showAlert?.('ดึงข้อมูลไม่สำเร็จ','เชื่อมต่อฐานข้อมูลไม่ได้ทั้งหมด — ตรวจสอบว่าได้ "เข้าสู่ระบบร้านค้า" แล้วหรือยัง (ต้องล็อกอินก่อนจึงจะอ่าน/เขียนข้อมูลได้) และ Project URL/anon key ถูกต้อง',true);
+      window.showAlert?.('ดึงข้อมูลไม่สำเร็จ','เชื่อมต่อฐานข้อมูลไม่ได้ทั้งหมด — ตรวจสอบว่าได้ "เข้าสู่ระบบร้านค้า" แล้วหรือยัง (ต้องล็อกอินก่อนจึงจะอ่าน/เขียนข้อมูลได้) และ Project URL/anon key ถูกต้อง',true);
       return false;
     }
     try{
@@ -4910,7 +4886,8 @@ try{
 }catch(e){}
 window.persist=persist;
 window.canDo=p=>{ensure();const u=db.activeUser||db.users.find(x=>x.role==='OWNER');return !!u&&(u.role==='OWNER'||u.permissions?.includes('ALL')||u.permissions?.includes(p));};
-const ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
+window.ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
+const ok=window.ok;
 ensure();
 
 window.openUserManagerModal=window.switchSettingsTab?()=>window.switchSettingsTab('USERS'):function(){};
