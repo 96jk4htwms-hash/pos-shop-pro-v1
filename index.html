@@ -4886,8 +4886,7 @@ try{
 }catch(e){}
 window.persist=persist;
 window.canDo=p=>{ensure();const u=db.activeUser||db.users.find(x=>x.role==='OWNER');return !!u&&(u.role==='OWNER'||u.permissions?.includes('ALL')||u.permissions?.includes(p));};
-window.ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
-const ok=window.ok;
+const ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
 ensure();
 
 window.openUserManagerModal=window.switchSettingsTab?()=>window.switchSettingsTab('USERS'):function(){};
