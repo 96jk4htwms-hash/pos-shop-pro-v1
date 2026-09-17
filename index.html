@@ -2102,13 +2102,18 @@
         try {
           // 1. Shifts — column names in this schema: opening_cash/closing_cash (not
           // starting_cash/ending_cash), opened_at/closed_at, status 'OPEN'/'CLOSED' (uppercase).
+          // opened_by/closed_by link to app_users.id via the same toUUID() conversion used when
+          // app_users itself is upserted (see the app_users block below), so this correctly
+          // points at that staff member's already-synced row rather than staying NULL.
           const shiftRows = (db.shifts || []).map(s => ({
             id: toUUID(s.id),
             opened_at: new Date(s.startTime).toISOString(),
             closed_at: s.endTime ? new Date(s.endTime).toISOString() : null,
             opening_cash: roundAmt(s.openingCash),
             closing_cash: s.cashOnHand ? roundAmt(s.cashOnHand) : null,
-            status: s.endTime ? 'CLOSED' : 'OPEN'
+            status: s.endTime ? 'CLOSED' : 'OPEN',
+            opened_by: s.openedById ? toUUID(s.openedById) : null,
+            closed_by: s.closedById ? toUUID(s.closedById) : null
           }));
           if (shiftRows.length > 0) {
             const { error: shiftErr } = await client.from('shifts').upsert(shiftRows, { onConflict: 'id' });
@@ -4886,7 +4891,8 @@ try{
 }catch(e){}
 window.persist=persist;
 window.canDo=p=>{ensure();const u=db.activeUser||db.users.find(x=>x.role==='OWNER');return !!u&&(u.role==='OWNER'||u.permissions?.includes('ALL')||u.permissions?.includes(p));};
-const ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
+window.ok=p=>window.canDo(p)||(window.showAlert?.('ไม่มีสิทธิ์','บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้',true),false);
+const ok=window.ok;
 ensure();
 
 window.openUserManagerModal=window.switchSettingsTab?()=>window.switchSettingsTab('USERS'):function(){};
@@ -5749,6 +5755,7 @@ document.addEventListener('DOMContentLoaded',()=>{ensure();window.renderStockTab
     s.endTime = Date.now();
     s.cashOnHand = roundAmt(actual);
     s.closedBy = db.activeUser?.name || '-';
+    s.closedById = db.activeUser?.id || null;
     s.summary = sum;
     s.diff = diff;
     s.diffNote = diff !== 0 ? diffNote : '';
